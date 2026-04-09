@@ -1,0 +1,119 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_memmap.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/adc.h"
+#include "driverlib/uart.h"
+#include "utils/uartstdio.h"
+
+// Variable global para guardar el valor del ADC
+uint32_t adc_value = 0;
+
+void configure_uart(void) {
+    // Habilitar periféricos para UART0 (USB virtual)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+    
+    // Configurar pines PA0 y PA1 para UART
+    GPIOPinConfigure(GPIO_PA0_U0RX);
+    GPIOPinConfigure(GPIO_PA1_U0TX);
+    GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+    
+    // Configurar UART a 115200 baudios
+    UARTConfigSetExpClk(UART0_BASE, SysCtlClockGet(), 115200,
+                        UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE |
+                        UART_CONFIG_PAR_NONE);
+    
+    // Inicializar la salida por UART
+    UARTStdioConfig(0, 115200, SysCtlClockGet());
+}
+
+void configure_adc(void) {
+    // 1. Habilitar el periférico ADC0
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0);
+    
+    // 2. Habilitar el puerto GPIO que tiene el pin analógico (PE2 = AIN1)
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
+    
+    // 3. Configurar el pin PE2 como entrada analógica
+    //    AIN1 está en PE2 según el datasheet[citation:9]
+    GPIOPinTypeADC(GPIO_PORTE_BASE, GPIO_PIN_2);
+    
+    // 4. Configurar el sample sequencer 3 (FIFO de profundidad 1, más simple)
+    //    Deshabilitar el sequencer durante la configuración
+    ADCSequenceDisable(ADC0_BASE, 3);
+    
+    // 5. Configurar el sequencer: trigger por software, prioridad 0 (máxima)
+    ADCSequenceConfigure(ADC0_BASE, 3, ADC_TRIGGER_PROCESSOR, 0);
+    
+    // 6. Configurar el step: un solo paso, canal AIN1, generar interrupción al final
+    ADCSequenceStepConfigure(ADC0_BASE, 3, 0, ADC_CTL_CH1 | ADC_CTL_IE | ADC_CTL_END);
+    
+    // 7. Habilitar el sequencer
+    ADCSequenceEnable(ADC0_BASE, 3);
+    
+    // 8. Limpiar cualquier interrupción pendiente
+    ADCIntClear(ADC0_BASE, 3);
+}
+
+uint32_t read_adc_channel(void) {
+    uint32_t value;
+    
+    // 1. Iniciar la conversión en el sequencer 3
+    ADCProcessorTrigger(ADC0_BASE, 3);
+    
+    // 2. Esperar hasta que la conversión esté completa
+    while(!ADCIntStatus(ADC0_BASE, 3, false));
+    
+    // 3. Limpiar el flag de interrupción
+    ADCIntClear(ADC0_BASE, 3);
+    
+    // 4. Leer el valor del FIFO
+    ADCSequenceDataGet(ADC0_BASE, 3, &value);
+    
+    return value;
+}
+
+float adc_to_voltage(uint32_t adc_value) {
+    // ADC de 12 bits: valor 0-4095 corresponde a 0V-3.3V[citation:7]
+    return (float)adc_value * 3.3f / 4095.0f;
+}
+
+float adc_to_percentage(uint32_t adc_value) {
+    return (float)adc_value * 100.0f / 4095.0f;
+}
+
+int main(void) {
+    uint32_t adc_raw;
+    float voltage, percentage;
+    
+    // Configurar el reloj del sistema a 40 MHz (configuración común)
+    SysCtlClockSet(SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN | SYSCTL_XTAL_16MHZ);
+    
+    // Configurar UART para mostrar resultados
+    configure_uart();
+    
+    // Configurar ADC
+    configure_adc();
+    
+    UARTprintf("Sistema iniciado. Leyendo valores del ADC...\n");
+    UARTprintf("Gira el potenciómetro para ver los cambios.\n");
+    UARTprintf("----------------------------------------\n");
+    
+    while(1) {
+        // Leer el valor del ADC
+        adc_raw = read_adc_channel();
+        
+        // Convertir a voltaje y porcentaje
+        voltage = adc_to_voltage(adc_raw);
+        percentage = adc_to_percentage(adc_raw);
+        
+        // Mostrar resultados por UART
+        UARTprintf("ADC: %4d | Voltaje: %.2fV | Porcentaje: %.1f%%\n", 
+                   adc_raw, voltage, percentage);
+        
+        // Pequeña pausa (aproximadamente 500ms)
+        SysCtlDelay(SysCtlClockGet() / 6);  // 40MHz / 6 ≈ 6.6M ciclos ≈ 500ms
+    }
+}
