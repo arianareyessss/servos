@@ -1,0 +1,98 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/gpio.h"
+#include "driverlib/pin_map.h"
+#include "driverlib/pwm.h"
+#include "driverlib/rom.h"
+
+// Definiciones para el PWM
+#define PWM_FREQUENCY_HZ   50      // Frecuencia del servo (50 Hz = 20ms)
+#define SYSTICK_HZ         50000000 // Reloj del sistema (50 MHz)
+
+// Función para calcular el valor de carga del PWM
+uint32_t calculate_load(uint32_t sysclk_hz, uint32_t pwm_freq_hz) {
+    return (sysclk_hz / pwm_freq_hz);
+}
+
+// Función para configurar el ciclo de trabajo en función del ángulo
+// Ángulo: 0 a 180 grados
+void set_servo_angle(uint32_t ui32Base, uint32_t ui32PWMGen, uint32_t ui32GenPeriod,
+                     uint32_t ui32PWMPin, uint8_t angle) {
+    uint32_t ui32PWMWidth;
+    
+    // Mapeo del ángulo a ancho de pulso:
+    // 0°   -> 1.0 ms  -> duty cycle = 3%   (600 us)
+    // 90°  -> 1.5 ms  -> duty cycle = 7.5% (1500 us)
+    // 180° -> 2.0 ms  -> duty cycle = 10%  (2000 us)
+    // La fórmula es: ancho_pulso_us = 1000 + (angle * 1000 / 180)
+    // Para 0°:   1000 us
+    // Para 90°:  1500 us
+    // Para 180°: 2000 us
+    
+    uint32_t pulse_width_us = 1000 + (angle * 1000 / 180);
+    
+    // Convertir microsegundos a ticks del PWM
+    // Periodo total = 20 ms = 20000 us
+    // Ticks totales = GenPeriod
+    ui32PWMWidth = (pulse_width_us * ui32GenPeriod) / 20000;
+    
+    // Configurar el ancho del pulso
+    PWMGenPeriodSet(ui32Base, ui32PWMGen, ui32GenPeriod);
+    PWMPulseWidthSet(ui32Base, ui32PWMPin, ui32PWMWidth);
+}
+
+int main(void) {
+    uint32_t ui32PWMLoad;
+    uint32_t ui32PWMClock;
+    uint8_t angle = 0;
+    
+    // Configurar el reloj del sistema a 50 MHz
+    ROM_SysCtlClockSet(SYSCTL_SYSDIV_4 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN | SYSCTL_XTAL_16MHZ);
+    
+    // Habilitar los periféricos necesarios
+    ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM1);     // Módulo PWM1
+    ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);    // Puerto F (para el PWM)
+    ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOC);    // Puerto C
+    
+    // Configurar el pin PF2 como PWM (M1PWM6)
+    // Según el pinout del Launchpad, PF2 corresponde a M1PWM6
+    ROM_GPIOPinConfigure(GPIO_PF2_M1PWM6);
+    ROM_GPIOPinTypePWM(GPIO_PORTF_BASE, GPIO_PIN_2);
+    
+    // Configurar el generador PWM1 (Timer 2)
+    // Usar el generador PWM1 con el módulo PWM1
+    ROM_PWMGenConfigure(PWM1_BASE, PWM_GEN_2,
+                        PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    
+    // Calcular el valor de carga para 50 Hz
+    ui32PWMClock = ROM_SysCtlClockGet();
+    ui32PWMLoad = calculate_load(ui32PWMClock, PWM_FREQUENCY_HZ);
+    
+    // Configurar el periodo del PWM
+    ROM_PWMGenPeriodSet(PWM1_BASE, PWM_GEN_2, ui32PWMLoad);
+    
+    // Habilitar el PWM
+    ROM_PWMGenEnable(PWM1_BASE, PWM_GEN_2);
+    
+    // Habilitar la salida del PWM en el pin
+    ROM_PWMOutputState(PWM1_BASE, PWM_OUT_6_BIT, true);
+    
+    // Bucle principal
+    while(1) {
+        // Mover el servo a diferentes posiciones
+        angle = 0;
+        set_servo_angle(PWM1_BASE, PWM_GEN_2, ui32PWMLoad, PWM_OUT_6, angle);
+        ROM_SysCtlDelay(ui32PWMClock / 3);  // Esperar 1 segundo
+        
+        angle = 90;
+        set_servo_angle(PWM1_BASE, PWM_GEN_2, ui32PWMLoad, PWM_OUT_6, angle);
+        ROM_SysCtlDelay(ui32PWMClock / 3);  // Esperar 1 segundo
+        
+        angle = 180;
+        set_servo_angle(PWM1_BASE, PWM_GEN_2, ui32PWMLoad, PWM_OUT_6, angle);
+        ROM_SysCtlDelay(ui32PWMClock / 3);  // Esperar 1 segundo
+    }
+}
